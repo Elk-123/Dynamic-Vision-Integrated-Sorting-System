@@ -1,4 +1,3 @@
-
 我们将采用 **"Python 大脑 + C++ 小脑"** 的混合架构：
 *   **Perception (视觉)**: Python (利用 PyTorch/YOLO 生态的便捷性)。
 *   **Control (驱动/运动)**: C++ (利用 `ros2_control` 及其 Realtime 约束，确保毫秒级响应)。

@@ -57,8 +57,8 @@
 graph TD
     subgraph "Perception Layer (The Eye)"
         Cam[Camera Driver / Sim Cam] -->|Raw RGB-D| VisionNode
-        VisionNode[AI Inference Svc (YOLO)] -->|Bounding Box/Mask| DepthCalc
-        DepthCalc[3D Coordinate Extractor] -->|Point (x,y,z)| TF_Broadcaster
+        VisionNode["AI Inference Svc (YOLO)"] -->|"Bounding Box/Mask"| DepthCalc
+        DepthCalc["3D Coordinate Extractor"] -->|"Point (x,y,z)"| TF_Broadcaster
     end
 
     subgraph "Control Layer (The Brain & Hand)"
