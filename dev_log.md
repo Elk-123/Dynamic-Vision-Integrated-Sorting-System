@@ -1,145 +1,271 @@
-收到，这才是“主程”该有的节奏。既然大纲已定，我们不再纸上谈兵，现在开始**“填肉”**。
+收到，**决策非常专业**。
 
-你需要把系统拆解为标准的 ROS 2 软件包结构，并立刻验证硬件通信，打通数据流的第一公里。
+这种做法在软件工程中叫做 **“依赖倒置” (Dependency Inversion)** —— 我们针对**接口 (Interface)** 编程，而不是针对**实现 (Implementation)** 编程。
 
-这是更新后的 Dev Log 和 **原子级（Atomic）** 的执行指南。
-
----
-
-# 🛠️ Dev_Log: Dynamic-Vision-Integrated-Sorting-System
-
-### ✅ Completed (已归档)
-*   [x] **Infrastructure**: Ubuntu 22.04 VM + ROS 2 Humble 安装完毕。
-*   [x] **SCM**: Git 初始化，SSH 配置完成，仓库已 Push 到 GitHub。
-*   [x] **Architecture**: 确立 "ROS 2 + Python + YOLOv8 + MoveIt 2" 技术栈。
-
-### 🔄 In Progress (当前冲刺任务)
-*   [ ] **Skeleton**: 创建符合工业规范的 ROS 2 软件包 (Packages) 结构。
-*   [ ] **Hardware-In-Loop (HIL) Test 1**: 摄像头 USB 透传验证 & 图像流可视化。
-*   [ ] **Hardware-In-Loop (HIL) Test 2**: 机械臂串口通信验证 (Ping Test)。
+既然机械臂型号未定，我们现在构建一个 **通用控制抽象层 (Hardware Abstraction Layer - HAL)**。这样，无论你两天后拿来的是 myCobot、xArm 还是自制的串口舵机臂，我们只需要写一个简单的“翻译驱动”即可接入，上层业务逻辑（视觉、调度）完全不用改。
 
 ---
 
-# 🚀 详细开发指导 (Phase 1: 骨架与神经)
+# 🚀 Phase 2: 核心逻辑与抽象层构建
 
-既然根目录已经就绪，我们现在要在 `src` 下建立四个核心功能包。这种**模块化设计**是 ROS 的精髓，能避免代码变成一团乱麻。
+我们将开发两个核心节点，并通过标准的 ROS 消息进行解耦：
 
-### 步骤一：构建系统骨架 (Package Skeleton)
+1.  **`vision_processor` (感知层)**: 跑 YOLOv8，算出物体在画面中的像素坐标 (u, v)，并简单映射为空间坐标 (x, y, z)，发布目标指令。
+2.  **`dummy_arm_driver` (控制层抽象)**: 这是一个**占位驱动**。它监听目标指令，假装自己在移动（打印日志），并反馈状态。等真机到了，把这个文件替换成真机驱动即可。
 
-请在终端中逐行执行以下命令。我们将创建四个核心包：
-1.  `dviss_description`: 存放机器人模型 (URDF)、3D 模型文件 (Meshes)。
-2.  `dviss_perception`: 存放 YOLOv8、OpenCV 相关的视觉代码。
-3.  `dviss_control`: 存放 MoveIt 配置和机械臂控制逻辑。
-4.  `dviss_bringup`: 存放启动脚本 (Launch files)，一键启动整个系统。
+### 📅 架构图 (Data Flow)
 
-*(注：DVISS 是项目名的缩写，作为包前缀)*
-
-```bash
-# 1. 进入代码源目录
-cd ~/Dynamic-Vision-Integrated-Sorting-System/src
-
-# 2. 创建视觉包 (Python, 依赖 rclpy, 图像消息, OpenCV桥接)
-ros2 pkg create --build-type ament_python dviss_perception --dependencies rclpy sensor_msgs std_msgs cv_bridge
-
-# 3. 创建控制包 (Python, 依赖 MoveIt 接口)
-ros2 pkg create --build-type ament_python dviss_control --dependencies rclpy moveit_msgs geometry_msgs
-
-# 4. 创建描述包 (CMake, 因为主要放 URDF/Meshes 文件，不需要 Python 编译逻辑)
-ros2 pkg create --build-type ament_cmake dviss_description
-
-# 5. 创建启动包 (CMake, 存放全局 Launch 文件)
-ros2 pkg create --build-type ament_cmake dviss_bringup
-
-# 6. 编译一下，确保骨架没有语法错误
-cd ~/Dynamic-Vision-Integrated-Sorting-System
-colcon build
+```mermaid
+[Camera] --(Image)--> [Vision Node] --(Target XYZ)--> [Arm Driver (Interface)]
+                                                           ^
+                                                           |
+                                                      (两天后接入)
+                                                     [Real Hardware]
 ```
 
 ---
 
-### 步骤二：硬件透传与“点亮”测试 (The Smoke Test)
+### 步骤一：定义通信接口 (Standardize)
 
-没有硬件数据的机器人就是瞎子和瘫子。我们需要立刻确认虚拟机能否通过 USB 拿到数据。
+为了通用性，我们约定使用 ROS 2 标准消息 `geometry_msgs/Point` 来传递目标坐标。
 
-#### 1. 确认硬件型号 (Action Required)
-请确认你手边的硬件型号。如果还没插入电脑，**现在插入**。
-*   **相机**: 是 USB Webcam？还是 Intel RealSense (D435/D415)？
-*   **机械臂**: 是哪家的？(例如: Elephant Robotics myCobot, UFactory xArm, 还是基于 Arduino 的自制臂?)
+**不需要创建新包，直接开始写代码。**
 
-#### 2. 检查 USB 挂载
-在终端输入：
-```bash
-lsusb
-```
-> **检查点**：
-> *   你必须能看到类似 `Intel Corp. RealSense` 或 `QinHeng Electronics HL-340` (常见串口芯片) 的字样。
-> *   如果没有，去虚拟机软件顶部菜单：`设备` -> `USB` -> 勾选你的设备。
+---
 
-#### 3. 摄像头数据流测试 (让机器人“睁眼”)
+### 步骤二：编写“占位”驱动 (The Abstract Driver)
 
-不管你用什么相机，我们先用最通用的驱动测试图像传输是否正常。
+我们在 `dviss_control` 包里创建一个节点，它的工作就是“假装自己是个机械臂”。
 
-**A. 安装通用 USB 相机驱动 & 图像工具**
-```bash
-sudo apt install -y ros-humble-usb-cam ros-humble-rqt-image-view
-```
-
-**B. 运行相机节点**
-```bash
-# 启动相机节点
-ros2 run usb_cam usb_cam_node_exe
-```
-*如果终端出现 `[INFO] ... Starting 'usb_cam' ...` 且没有报错，说明驱动挂载成功。*
-
-**C. 可视化 (验证是否卡顿)**
-*   打开**新终端** (Ctrl+Alt+T)。
-*   输入命令：
+1.  **创建文件**
     ```bash
-    ros2 run rqt_image_view rqt_image_view
+    cd ~/Dynamic-Vision-Integrated-Sorting-System/src/dviss_control/dviss_control
+    touch arm_controller.py
     ```
-*   在弹出的窗口左上角下拉框选择 `/image_raw`。
-*   **关键测试**：在镜头前挥挥手。
-    *   *流畅吗？* -> 很好，USB 3.0 透传正常。
-    *   *卡顿/马赛克？* -> 你可能把 USB 3.0 设备插到了 USB 2.0 端口，或者虚拟机 USB 控制器设置错误。
 
-#### 4. 机械臂串口权限测试 (让机器人“有感觉”)
+2.  **写入代码** (打开编辑器写入)
+    *这个节点订阅 `/arm/target_point`，收到坐标后，模拟延时移动，然后打印“到达”。*
 
-机械臂通常通过串口 (Serial Port) 通信。
+```python
+import rclpy
+from rclpy.node import Node
+from geometry_msgs.msg import Point
+import time
 
-**A. 查找设备号**
-```bash
-ls -l /dev/ttyUSB*
+class ArmController(Node):
+    def __init__(self):
+        super().__init__('arm_controller')
+        
+        # === 核心接口 ===
+        # 无论以后用什么机械臂，都监听这个 Topic
+        self.subscription = self.create_subscription(
+            Point,
+            '/arm/target_point',
+            self.listener_callback,
+            10)
+        
+        self.get_logger().info('🤖 机械臂抽象层已启动 - 等待目标指令...')
+        self.is_moving = False
+
+    def listener_callback(self, msg):
+        if self.is_moving:
+            self.get_logger().warn(f'⚠️ 机械臂忙碌中，忽略指令: [{msg.x:.2f}, {msg.y:.2f}]')
+            return
+
+        self.is_moving = True
+        self.get_logger().info(f'📨 收到指令: 移动至 X={msg.x:.2f}, Y={msg.y:.2f}, Z={msg.z:.2f}')
+        
+        # === 模拟硬件运动 (Simulation) ===
+        # 当真机到来时，这里替换为串口写入代码 (e.g., serial.write(...))
+        time.sleep(2.0) # 假装移动了2秒
+        
+        self.get_logger().info(f'✅ 到达目标: [{msg.x:.2f}, {msg.y:.2f}] - 抓取动作执行中...')
+        time.sleep(1.0) # 假装抓取
+        self.is_moving = False
+        self.get_logger().info('💤 动作完成，这就绪')
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = ArmController()
+    rclpy.spin(node)
+    node.destroy_node()
+    rclpy.shutdown()
 ```
-*   你应该看到 `/dev/ttyUSB0` 或 `ttyACM0`。
 
-**B. 测试读写权限**
-还记得我们之前加了 `dialout` 组吗？现在验证一下：
-```bash
-# 尝试读取串口信息 (如果没有 Permission denied 报错，就是成功)
-cat /dev/ttyUSB0
-# (按 Ctrl+C 停止)
-```
-*如果提示 `Permission denied`，说明你上次加完权限后**没有重启虚拟机**，请立即重启。*
+3.  **注册节点**
+    修改 `~/Dynamic-Vision-Integrated-Sorting-System/src/dviss_control/setup.py`，在 `console_scripts` 里添加：
+    ```python
+    'console_scripts': [
+        'arm_controller = dviss_control.arm_controller:main',
+    ],
+    ```
 
 ---
 
-### 步骤三：提交代码 (Checkpoint)
+### 步骤三：编写视觉大脑 (The YOLO Brain)
 
-既然骨架搭好了，测试也做了，立刻提交代码，养成好习惯。
+这是重头戏。我们将实现 YOLOv8 的实时推理，并把检测到的物体中心点发送给上面的驱动。
 
-```bash
-cd ~/Dynamic-Vision-Integrated-Sorting-System
-git add src/
-git commit -m "Feat: Create package skeleton for perception, control, and description"
-git push
+1.  **创建文件**
+    ```bash
+    cd ~/Dynamic-Vision-Integrated-Sorting-System/src/dviss_perception/dviss_perception
+    touch detector.py
+    ```
+
+2.  **准备 YOLO 模型**
+    *我们将使用最轻量级的 `yolov8n.pt`，代码会自动下载它。*
+
+3.  **写入代码**
+    *请注意：这里有一个简单的像素到物理坐标的映射 (Pixel to Real)，目前是硬编码的比例，以后我们需要通过标定来修正它。*
+
+```python
+import rclpy
+from rclpy.node import Node
+from sensor_msgs.msg import Image
+from geometry_msgs.msg import Point
+from cv_bridge import CvBridge
+import cv2
+from ultralytics import YOLO
+
+class YoloDetector(Node):
+    def __init__(self):
+        super().__init__('yolo_detector')
+        
+        # 1. 订阅摄像头
+        self.subscription = self.create_subscription(
+            Image,
+            '/perception/image_raw',  # 对应 usb_cam 的话题
+            self.image_callback,
+            10)
+        
+        # 2. 发布处理后的图像 (用于调试显示)
+        self.img_pub = self.create_publisher(Image, '/perception/yolo_result', 10)
+        
+        # 3. 发布机械臂目标坐标
+        self.target_pub = self.create_publisher(Point, '/arm/target_point', 10)
+        
+        self.bridge = CvBridge()
+        
+        # 加载 YOLO 模型 (会自动下载到当前目录)
+        self.get_logger().info('正在加载 YOLOv8 模型 (首次运行可能需要下载)...')
+        self.model = YOLO("yolov8n.pt") 
+        self.get_logger().info('✅ 模型加载完毕')
+
+    def image_callback(self, msg):
+        # 转换 ROS 图像 -> OpenCV 格式
+        try:
+            cv_image = self.bridge.imgmsg_to_cv2(msg, "bgr8")
+        except Exception as e:
+            self.get_logger().error(f'CV Bridge Error: {e}')
+            return
+
+        # 执行推理
+        results = self.model(cv_image, verbose=False)
+        
+        # 解析结果
+        for r in results:
+            boxes = r.boxes
+            for box in boxes:
+                # 获取边界框坐标
+                x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+                conf = box.conf[0]
+                cls = int(box.cls[0])
+                label = self.model.names[cls]
+
+                # 🎯 核心逻辑：我们只抓 "cup", "bottle", "apple" (示例)
+                # 你可以在这里过滤你想抓的东西
+                if conf > 0.5:
+                    # 计算中心点 (Pixel Frame)
+                    u_center = int((x1 + x2) / 2)
+                    v_center = int((y1 + y2) / 2)
+
+                    # 画框框 (Visual Debug)
+                    cv2.rectangle(cv_image, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 0), 2)
+                    cv2.circle(cv_image, (u_center, v_center), 5, (0, 0, 255), -1)
+                    cv2.putText(cv_image, f"{label} {conf:.2f}", (int(x1), int(y1)-10), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+
+                    # 🧮 坐标转换 (Pixel -> Real World)
+                    # 这是一个非常粗糙的映射，仅供逻辑测试
+                    # 假设画面中心是 (0,0)，每个像素代表 0.5mm
+                    img_h, img_w, _ = cv_image.shape
+                    
+                    real_x = (u_center - img_w / 2) * 0.5  # 简单的比例映射
+                    real_y = (v_center - img_h / 2) * 0.5
+                    real_z = 0.0 # 假设物体在桌面上
+
+                    # 发布目标给机械臂
+                    target_msg = Point()
+                    target_msg.x = float(real_x)
+                    target_msg.y = float(real_y)
+                    target_msg.z = float(real_z)
+                    self.target_pub.publish(target_msg)
+                    
+                    self.get_logger().info(f'发现了 {label}! 发送抓取坐标: ({real_x:.1f}, {real_y:.1f})')
+
+        # 发布画了框的图
+        self.img_pub.publish(self.bridge.cv2_to_imgmsg(cv_image, "bgr8"))
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = YoloDetector()
+    rclpy.spin(node)
+    node.destroy_node()
+    rclpy.shutdown()
 ```
+
+4.  **注册节点**
+    修改 `~/Dynamic-Vision-Integrated-Sorting-System/src/dviss_perception/setup.py`，在 `console_scripts` 里添加：
+    ```python
+    'console_scripts': [
+        'detector = dviss_perception.detector:main',
+    ],
+    ```
 
 ---
 
-### 🛑 下一步指令需求
+### 步骤四：全链路联调 (Integration Test)
 
-为了给我生成精准的 **Driver Integration** 代码，请回复我以下信息：
+现在我们不依赖任何物理机械臂，验证**视觉到控制**的数据流。
 
-1.  **摄像头具体型号**：(例如：普通罗技 Webcam / RealSense D435 / Oak-D Lite)
-2.  **机械臂具体型号**：(非常重要！决定了我是教你配置 `ros2_control` 还是写简易 Python 串口驱动)
-3.  **刚才测试的结果**：图像卡不卡？`lsusb` 能看到设备吗？
+1.  **编译工作空间**
+    ```bash
+    cd ~/Dynamic-Vision-Integrated-Sorting-System
+    colcon build
+    source install/setup.bash
+    ```
+
+2.  **启动系统 (需要开 3 个终端)**
+
+    *   **终端 1 (眼睛)**:
+        ```bash
+        ros2 launch dviss_perception camera.launch.py
+        ```
+    *   **终端 2 (手 - 抽象层)**:
+        ```bash
+        ros2 run dviss_control arm_controller
+        ```
+    *   **终端 3 (大脑 - YOLO)**:
+        ```bash
+        ros2 run dviss_perception detector
+        ```
+
+3.  **验证方法**
+    *   拿一个**水瓶**或**手机**放在摄像头前。
+    *   **看终端 3**: 应该会显示 `Found bottle! Sending coords...`
+    *   **看终端 2**: 应该会显示 `🤖 收到指令: 移动至...` -> `✅ 到达目标`。
+    *   **看 RQT**: 刷新话题列表，选择 `/perception/yolo_result`，你应该能看到物体被框出来了。
+
+---
+
+### 📝 主程的总结
+
+现在我们搭建了一个 **"Air-Gapped"** 的开发环境：
+*   ✅ **输入端**：真实的摄像头数据。
+*   ✅ **处理端**：真实的 YOLO 算法。
+*   ✅ **输出端**：标准的 ROS 接口，但后端接的是虚拟驱动。
+
+**当你两天后拿到机械臂信息：**
+我们只需要重写 `arm_controller.py` 里的 `listener_callback` 函数，把 `print` 换成真正的 `serial.write` 或者 `SDK.move_to`，整个系统就能瞬间变成实物系统。
+
+**现在，请开始填肉 (Copy & Build)，并把你运行成功的终端截图发给我。**

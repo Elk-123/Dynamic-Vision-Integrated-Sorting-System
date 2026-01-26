@@ -1,0 +1,12 @@
+/**:
+  ros__parameters:
+    video_device: "/dev/video0"  # 默认设备号，如果是笔记本内置通常是0
+    framerate: 10.0
+    image_width: 320             # 降低分辨率以减少虚拟机USB带宽压力
+    image_height: 240
+    pixel_format: "yuyv2rgb"
+    camera_name: "win_webcam"
+    frame_id: "camera_link"
+    brightness: -1               # -1 表示自动
+    contrast: -1
+    auto_white_balance: true
