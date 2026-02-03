@@ -27,6 +27,7 @@ setup(
     },
     entry_points={
         'console_scripts': [
+            'detector = dviss_perception.detector:main',
         ],
     },
 )
